@@ -4,6 +4,8 @@
 #include <MFRC522.h>
 #include <Preferences.h>
 
+// Ctrl + K, Ctrl + 0 - Ctrl + 0, Ctrl + J
+
 /*
   PARAMETROS
 */
@@ -24,8 +26,8 @@ int NUM_USUARIOS = 3;
 
 String userID = "";
 String password = "";
-const String ADMIN_ID = "123";
-const String ADMIN_PASS = "123";
+String ADMIN_ID = "123";
+String ADMIN_PASS = "123";
 bool isEnteringUserID = true;
 bool isAdminLoggedIn = false;
 
@@ -46,11 +48,11 @@ byte colPins[COLS] = {22, 23, 13, 12};
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
 // RFID(RC522)
-#define RST_PIN   15
-#define SS_PIN    17
-#define SCK_PIN   16
-#define MISO_PIN  2
-#define MOSI_PIN  4
+#define SS_PIN  26
+#define RST_PIN 33
+#define SCK_PIN 14
+#define MOSI_PIN 27
+#define MISO_PIN 25
 
 MFRC522 rfid(SS_PIN, RST_PIN);
 Preferences prefs;
@@ -72,6 +74,14 @@ void mostrarMenuAdministrador();
 void crearUsuario();
 void eliminarUsuario();
 void listarUsuarios();
+void cambiarContrasenaUsuario();
+void cambiarIDAdministrador();
+
+// GESTIÓN DE LA MEMORIA
+void guardarUsuariosEnMemoria();
+void cargarUsuariosDesdeMemoria();
+void guardarAdministradorEnMemoria();
+void cargarAdministradorDesdeMemoria();
 
 // KEYPAD
 void handleKeypadInput();
@@ -91,6 +101,10 @@ void setup() {
   Serial.begin(115200);
   SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, SS_PIN);
   rfid.PCD_Init();
+
+  cargarAdministradorDesdeMemoria();
+  cargarUsuariosDesdeMemoria();
+
   promptUser();
 }
 
@@ -110,11 +124,11 @@ void resetLogin() {
 }
 
 void promptUser() {
-  Serial.println("\nIntroduce tu ID de usuario (hasta 8 dígitos, termina con '#'):");
+  Serial.print("\nIntroduce tu ID de usuario (hasta 8 dígitos, termina con '#'):");
 }
 
 void promptPassword() {
-  Serial.println("Introduce tu contraseña (hasta 8 dígitos, termina con '#'):");
+  Serial.print("\nIntroduce tu contraseña (hasta 8 dígitos, termina con '#'):");
 }
 
 void processLogin() {
@@ -142,7 +156,9 @@ void mostrarMenuAdministrador() {
   Serial.println("3: Listar usuarios");
   Serial.println("4: Vincular tarjeta RFID");
   Serial.println("5: Desvincular tarjeta RFID");
-  Serial.println("6: Salir");
+  Serial.println("6: Cambiar contraseña de usuario");
+  Serial.println("7: Cambiar ID del administrador");
+  Serial.println("8: Salir");
 
   while (true) {
     char opcion = keypad.getKey();
@@ -163,6 +179,13 @@ void mostrarMenuAdministrador() {
         desvincularTarjetaRFID();
         break;
       } else if (opcion == '6') {
+        cambiarContrasenaUsuario();
+        break;
+      } else if (opcion == '7') {
+        cambiarIDAdministrador();
+        break;
+      }
+      else if (opcion == '8') {
         Serial.println("Saliendo del modo administrador...");
         isAdminLoggedIn = false;
         break;
@@ -188,6 +211,20 @@ void crearUsuario() {
     }
   }
 
+  // Validación: ID no puede ser igual al del superusuario
+  if (nuevoID == ADMIN_ID) {
+    Serial.println("\nERROR: El ID ingresado está reservado para el superusuario.");
+    return;
+  }
+
+  // Validación: ID no puede estar ya en uso por otro usuario
+  for (int i = 0; i < NUM_USUARIOS; i++) {
+    if (usuariosValidos[i].id == nuevoID) {
+      Serial.println("\nERROR: Este ID ya está en uso por otro usuario.");
+      return;
+    }
+  }
+
   Serial.println("\nIntroduce nueva contraseña (hasta 8 dígitos, termina con '#'):");
 
   while (true) {
@@ -204,6 +241,7 @@ void crearUsuario() {
   if (NUM_USUARIOS < 10) {
     usuariosValidos[NUM_USUARIOS++] = {nuevoID, nuevaPass};
     Serial.println("\nUsuario creado correctamente.");
+    guardarUsuariosEnMemoria();
   } else {
     Serial.println("\nLímite de usuarios alcanzado.");
   }
@@ -233,6 +271,7 @@ void eliminarUsuario() {
       }
       NUM_USUARIOS--;
       encontrado = true;
+      guardarUsuariosEnMemoria();
       break;
     }
   }
@@ -247,11 +286,161 @@ void eliminarUsuario() {
 void listarUsuarios() {
   Serial.println("\nListado de usuarios registrados:");
   for (int i = 0; i < NUM_USUARIOS; i++) {
-    Serial.print("- Usuario ");
-    Serial.print(i + 1);
-    Serial.print(": ");
-    Serial.println(usuariosValidos[i].id);
+    Serial.print(usuariosValidos[i].id);
+    Serial.print(", Tarjeta = ");
+
+    if (usuariosValidos[i].rfidUID != "") {
+      Serial.println(usuariosValidos[i].rfidUID);
+    } else {
+      Serial.println("No vinculada");
+    }
   }
+}
+
+void cambiarContrasenaUsuario() {
+  String idUsuario = "";
+  String nuevaPass = "";
+
+  Serial.println("Introduce ID del usuario para cambiar la contraseña (termina con '#'):");
+
+  while (true) {
+    char key = keypad.getKey();
+    if (key) {
+      if (key == '#') break;
+      if (isDigit(key) && idUsuario.length() < 8) {
+        idUsuario += key;
+        Serial.print("*");
+      }
+    }
+  }
+
+  // Cambio de contraseña para el administrador
+  if (idUsuario == ADMIN_ID) {
+    Serial.println("\nIntroduce nueva contraseña para el administrador (termina con '#'):");
+    while (true) {
+      char key = keypad.getKey();
+      if (key) {
+        if (key == '#') break;
+        if (isDigit(key) && nuevaPass.length() < 8) {
+          nuevaPass += key;
+          Serial.print("*");
+        }
+      }
+    }
+    ADMIN_PASS = nuevaPass;
+    guardarAdministradorEnMemoria();
+    Serial.println("\nContraseña del administrador cambiada.");
+    return;
+  }
+
+  // Buscar usuario común
+  int index = -1;
+  for (int i = 0; i < NUM_USUARIOS; i++) {
+    if (usuariosValidos[i].id == idUsuario) {
+      index = i;
+      break;
+    }
+  }
+
+  if (index == -1) {
+    Serial.println("\nUsuario no encontrado.");
+    return;
+  }
+
+  Serial.println("\nIntroduce nueva contraseña (termina con '#'):");
+
+  while (true) {
+    char key = keypad.getKey();
+    if (key) {
+      if (key == '#') break;
+      if (isDigit(key) && nuevaPass.length() < 8) {
+        nuevaPass += key;
+        Serial.print("*");
+      }
+    }
+  }
+
+  usuariosValidos[index].password = nuevaPass;
+  guardarUsuariosEnMemoria();
+  Serial.println("\nContraseña actualizada correctamente.");
+}
+
+void cambiarIDAdministrador() {
+  String nuevoID = "";
+
+  Serial.println("Introduce el nuevo ID para el superadministrador (termina con '#'):");
+
+  while (true) {
+    char key = keypad.getKey();
+    if (key) {
+      if (key == '#') break;
+      if (isDigit(key) && nuevoID.length() < 8) {
+        nuevoID += key;
+        Serial.print("*");
+      }
+    }
+  }
+
+  // Verificar que no esté siendo usado por un usuario común
+  for (int i = 0; i < NUM_USUARIOS; i++) {
+    if (usuariosValidos[i].id == nuevoID) {
+      Serial.println("\nERROR: Este ID ya está en uso por un usuario.");
+      return;
+    }
+  }
+
+  ADMIN_ID = nuevoID;
+  prefs.begin("seguridad", false);        // abrir namespace
+  prefs.putString("admin_id", ADMIN_ID);  // guardar persistente
+  prefs.end();
+
+  Serial.println("\nID del administrador cambiado correctamente.");
+}
+
+// GESTIÓN DE LA MEMORIA
+void guardarUsuariosEnMemoria() {
+  prefs.begin("usuarios", false);
+  prefs.putInt("num_usuarios", NUM_USUARIOS);
+
+  for (int i = 0; i < NUM_USUARIOS; i++) {
+    String key = "usuario_" + String(i);
+    String datos = usuariosValidos[i].id + "," + usuariosValidos[i].password + "," + usuariosValidos[i].rfidUID;
+    prefs.putString(key.c_str(), datos);
+  }
+
+  prefs.end();
+}
+
+void cargarUsuariosDesdeMemoria() {
+  prefs.begin("usuarios", true);
+  NUM_USUARIOS = prefs.getInt("num_usuarios", 0);
+  for (int i = 0; i < NUM_USUARIOS; i++) {
+    String key = "usuario_" + String(i);
+    String datos = prefs.getString(key.c_str(), "");
+    if (datos != "") {
+      int p1 = datos.indexOf(',');
+      int p2 = datos.lastIndexOf(',');
+
+      usuariosValidos[i].id = datos.substring(0, p1);
+      usuariosValidos[i].password = datos.substring(p1 + 1, p2);
+      usuariosValidos[i].rfidUID = datos.substring(p2 + 1);
+    }
+  }
+  prefs.end();
+}
+
+void guardarAdministradorEnMemoria() {
+  prefs.begin("seguridad", false);
+  prefs.putString("admin_id", ADMIN_ID);
+  prefs.putString("admin_pass", ADMIN_PASS);
+  prefs.end();
+}
+
+void cargarAdministradorDesdeMemoria() {
+  prefs.begin("seguridad", true);
+  ADMIN_ID = prefs.getString("admin_id", "123");
+  ADMIN_PASS = prefs.getString("admin_pass", "123");
+  prefs.end();
 }
 
 // KEYPAD
@@ -366,6 +555,7 @@ void vincularTarjetaRFID() {
   }
 
   usuariosValidos[index].rfidUID = uid;
+  guardarUsuariosEnMemoria();
   Serial.println("Tarjeta vinculada exitosamente.");
 }
 
@@ -398,6 +588,7 @@ void desvincularTarjetaRFID() {
   }
 
   usuariosValidos[index].rfidUID = "";
+  guardarUsuariosEnMemoria();
   Serial.println("\nTarjeta desvinculada exitosamente.");
 }
 
@@ -427,11 +618,13 @@ bool verificarAccesoPorTarjeta() {
     if (usuariosValidos[i].rfidUID == uid) {
       Serial.print("Acceso concedido a usuario: ");
       Serial.println(usuariosValidos[i].id);
+      promptUser();
       return true;
     }
   }
 
   Serial.println("Acceso denegado: tarjeta no vinculada.");
+  promptUser();
   return false;
 }
 
