@@ -1,14 +1,17 @@
 #include <Arduino.h>
 #include <Keypad.h>
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Preferences.h>
 
 /*
   PARAMETROS
 */
-
 // GESTIÓN DE USUARIOS(USUARIOS Y ADMINISTRADOR)
 struct Usuario {
   String id;
   String password;
+  String rfidUID;
 };
 
 Usuario usuariosValidos[10] = {
@@ -43,13 +46,22 @@ byte colPins[COLS] = {22, 23, 13, 12};
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
 // RFID(RC522)
+#define RST_PIN   15
+#define SS_PIN    17
+#define SCK_PIN   16
+#define MISO_PIN  2
+#define MOSI_PIN  4
+
+MFRC522 rfid(SS_PIN, RST_PIN);
+Preferences prefs;
+
+String rfidUID = "";
 
 // DISPLAY
 
 /*
   DECLARACIONES DE METODOS
 */
-
 // GESTIÓN DE USUARIOS(USUARIOS Y ADMINISTRADOR)
 void resetLogin();
 void promptUser();
@@ -65,6 +77,10 @@ void listarUsuarios();
 void handleKeypadInput();
 
 // RFID(RC522)
+String leerUIDTarjeta();
+void vincularTarjetaRFID();
+void desvincularTarjetaRFID();
+bool verificarAccesoPorTarjeta();
 
 // DISPLAY
 
@@ -73,17 +89,19 @@ void handleKeypadInput();
 */
 void setup() {
   Serial.begin(115200);
+  SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, SS_PIN);
+  rfid.PCD_Init();
   promptUser();
 }
 
 void loop() {
   handleKeypadInput();
+  verificarAccesoPorTarjeta();
 }
 
 /*
   METODOS
 */
-
 // GESTIÓN DE USUARIOS(USUARIOS Y ADMINISTRADOR)
 void resetLogin() {
   userID = "";
@@ -119,29 +137,35 @@ bool validarUsuario(const String& id, const String& password) {
 
 void mostrarMenuAdministrador() {
   Serial.println("\n*** MODO ADMINISTRADOR ***");
-  Serial.println("A: Crear nuevo usuario");
-  Serial.println("B: Eliminar usuario");
-  Serial.println("C: Listar usuarios");
-  Serial.println("D: Salir");
+  Serial.println("1: Crear nuevo usuario");
+  Serial.println("2: Eliminar usuario");
+  Serial.println("3: Listar usuarios");
+  Serial.println("4: Vincular tarjeta RFID");
+  Serial.println("5: Desvincular tarjeta RFID");
+  Serial.println("6: Salir");
 
   while (true) {
     char opcion = keypad.getKey();
     if (opcion) {
-      if (opcion == 'A') {
+      if (opcion == '1') {
         crearUsuario();
         break;
-      } else if (opcion == 'B') {
+      } else if (opcion == '2') {
         eliminarUsuario();
         break;
-      } else if (opcion == 'C') {
+      } else if (opcion == '3') {
         listarUsuarios();
         break;
-      } else if (opcion == 'D') {  // <-- Manejo de nueva opción
+      } else if (opcion == '4') {
+        vincularTarjetaRFID();
+        break;
+      } else if (opcion == '5') {
+        desvincularTarjetaRFID();
+        break;
+      } else if (opcion == '6') {
         Serial.println("Saliendo del modo administrador...");
         isAdminLoggedIn = false;
         break;
-      } else {
-        Serial.println("Opción no válida. Usa A, B, C o D.");
       }
     }
   }
@@ -272,5 +296,143 @@ void handleKeypadInput() {
 }
 
 // RFID(RC522)
+String leerUIDTarjeta() {
+  if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) {
+    return "";
+  }
+
+  String uid = "";
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    uid += String(rfid.uid.uidByte[i] < 0x10 ? "0" : "");
+    uid += String(rfid.uid.uidByte[i], HEX);
+  }
+
+  rfid.PICC_HaltA();  // detener la comunicación con la tarjeta
+  rfid.PCD_StopCrypto1();
+
+  uid.toUpperCase(); // uniforme
+  return uid;
+}
+
+void vincularTarjetaRFID() {
+  Serial.println("Introduce ID de usuario a vincular (termina con '#'):");
+
+  String idUsuario = "";
+  while (true) {
+    char key = keypad.getKey();
+    if (key) {
+      if (key == '#') break;
+      if (isDigit(key) && idUsuario.length() < 8) {
+        idUsuario += key;
+        Serial.print("*");
+      }
+    }
+  }
+
+  // Buscar usuario
+  int index = -1;
+  for (int i = 0; i < NUM_USUARIOS; i++) {
+    if (usuariosValidos[i].id == idUsuario) {
+      index = i;
+      break;
+    }
+  }
+
+  if (index == -1) {
+    Serial.println("\nUsuario no encontrado.");
+    return;
+  }
+
+  Serial.println("\nAcerca una tarjeta RFID para vincularla...");
+
+  String uid = "";
+  unsigned long inicio = millis();
+  while (millis() - inicio < 10000) {  // Esperar 10 segundos máx
+    uid = leerUIDTarjeta();
+    if (uid != "") break;
+  }
+
+  if (uid == "") {
+    Serial.println("Tiempo agotado. No se leyó tarjeta.");
+    return;
+  }
+
+  // Verificar si la UID ya está en uso
+  for (int i = 0; i < NUM_USUARIOS; i++) {
+    if (usuariosValidos[i].rfidUID == uid) {
+      Serial.println("Esta tarjeta ya está asignada a otro usuario.");
+      return;
+    }
+  }
+
+  usuariosValidos[index].rfidUID = uid;
+  Serial.println("Tarjeta vinculada exitosamente.");
+}
+
+void desvincularTarjetaRFID() {
+  Serial.println("Introduce ID de usuario a desvincular (termina con '#'):");
+
+  String idUsuario = "";
+  while (true) {
+    char key = keypad.getKey();
+    if (key) {
+      if (key == '#') break;
+      if (isDigit(key) && idUsuario.length() < 8) {
+        idUsuario += key;
+        Serial.print("*");
+      }
+    }
+  }
+
+  int index = -1;
+  for (int i = 0; i < NUM_USUARIOS; i++) {
+    if (usuariosValidos[i].id == idUsuario) {
+      index = i;
+      break;
+    }
+  }
+
+  if (index == -1) {
+    Serial.println("\nUsuario no encontrado.");
+    return;
+  }
+
+  usuariosValidos[index].rfidUID = "";
+  Serial.println("\nTarjeta desvinculada exitosamente.");
+}
+
+bool verificarAccesoPorTarjeta() {
+  // Esperar a que se acerque una tarjeta
+  if (!rfid.PICC_IsNewCardPresent()) {
+    return false;  // No hay tarjeta
+  }
+  
+  if (!rfid.PICC_ReadCardSerial()) {
+    return false;  // Error leyendo tarjeta
+  }
+
+  // Leer UID y convertirlo a String HEX
+  String uid = "";
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    if (rfid.uid.uidByte[i] < 0x10) uid += "0";  // para formato uniforme
+    uid += String(rfid.uid.uidByte[i], HEX);
+  }
+  uid.toUpperCase();
+
+  rfid.PICC_HaltA();  // Finalizar comunicación
+  rfid.PCD_StopCrypto1();
+
+  // Buscar usuario vinculado
+  for (int i = 0; i < NUM_USUARIOS; i++) {
+    if (usuariosValidos[i].rfidUID == uid) {
+      Serial.print("Acceso concedido a usuario: ");
+      Serial.println(usuariosValidos[i].id);
+      return true;
+    }
+  }
+
+  Serial.println("Acceso denegado: tarjeta no vinculada.");
+  return false;
+}
 
 // DISPLAY
