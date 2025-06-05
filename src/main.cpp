@@ -3,8 +3,8 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <Preferences.h>
-
-// Ctrl + K, Ctrl + 0 - Ctrl + 0, Ctrl + J
+#include <Wire.h>
+#include <U8g2lib.h>
 
 /*
   PARAMETROS
@@ -30,6 +30,7 @@ String ADMIN_ID = "123";
 String ADMIN_PASS = "123";
 bool isEnteringUserID = true;
 bool isAdminLoggedIn = false;
+String comboBuffer = "";
 
 // KEYPAD
 const byte ROWS = 4;
@@ -42,24 +43,21 @@ char keys[ROWS][COLS] = {
   {'*', '0', '#', 'D'}
 };
 
-byte rowPins[ROWS] = {5, 18, 19, 21};
-byte colPins[COLS] = {22, 23, 13, 12};
+byte colPins[COLS] = {26, 25, 33, 32};
+byte rowPins[ROWS] = {13, 12, 14, 27};
 
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
 // RFID(RC522)
-#define SS_PIN  26
-#define RST_PIN 33
-#define SCK_PIN 14
-#define MOSI_PIN 27
-#define MISO_PIN 25
+#define SS_PIN 4
+#define RST_PIN 2
 
 MFRC522 rfid(SS_PIN, RST_PIN);
 Preferences prefs;
-
 String rfidUID = "";
 
 // DISPLAY
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
 /*
   DECLARACIONES DE METODOS
@@ -82,6 +80,7 @@ void guardarUsuariosEnMemoria();
 void cargarUsuariosDesdeMemoria();
 void guardarAdministradorEnMemoria();
 void cargarAdministradorDesdeMemoria();
+void resetearDatosPorDefecto();
 
 // KEYPAD
 void handleKeypadInput();
@@ -99,8 +98,11 @@ bool verificarAccesoPorTarjeta();
 */
 void setup() {
   Serial.begin(115200);
-  SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, SS_PIN);
+  SPI.begin();
   rfid.PCD_Init();
+  Wire.begin(21, 22);
+  u8g2.begin();
+  u8g2.setFont(u8g2_font_ncenB08_tr);
 
   cargarAdministradorDesdeMemoria();
   cargarUsuariosDesdeMemoria();
@@ -124,19 +126,31 @@ void resetLogin() {
 }
 
 void promptUser() {
-  Serial.print("\nIntroduce tu ID de usuario (hasta 8 dígitos, termina con '#'):");
+  u8g2.clearBuffer();
+  u8g2.drawStr(0, 15, "Usuario:");
+  u8g2.sendBuffer();
 }
 
 void promptPassword() {
-  Serial.print("\nIntroduce tu contraseña (hasta 8 dígitos, termina con '#'):");
+  Serial.print("Estas en la contraseña");
+  u8g2.clearBuffer();
+  u8g2.drawStr(0, 15, "Contraseña:");
+  u8g2.sendBuffer();
 }
 
 void processLogin() {
-  Serial.println("Procesando login...");
+  u8g2.clearBuffer();
+  u8g2.drawStr(0, 15, "Procesando login...");
+  u8g2.sendBuffer();
+
   if (validarUsuario(userID, password)) {
-    Serial.println("Acceso concedido.");
+    u8g2.clearBuffer();
+    u8g2.drawStr(0, 15, "Acceso concedido");
+    u8g2.sendBuffer();
   } else {
-    Serial.println("Acceso denegado. Usuario o contraseña incorrectos.");
+    u8g2.clearBuffer();
+    u8g2.drawStr(0, 15, "Acceso denegado. Usuario o contraseña incorrectos.");
+    u8g2.sendBuffer();
   }
 }
 
@@ -186,7 +200,9 @@ void mostrarMenuAdministrador() {
         break;
       }
       else if (opcion == '8') {
-        Serial.println("Saliendo del modo administrador...");
+        u8g2.clearBuffer();
+        u8g2.drawStr(0, 15, "Saliendo...");
+        u8g2.sendBuffer();
         isAdminLoggedIn = false;
         break;
       }
@@ -198,7 +214,9 @@ void crearUsuario() {
   String nuevoID = "";
   String nuevaPass = "";
 
-  Serial.println("Introduce nuevo ID de usuario (hasta 8 dígitos, termina con '#'):");
+  u8g2.clearBuffer();
+  u8g2.drawStr(0, 15, "Nuevo usuario:");
+  u8g2.sendBuffer();
 
   while (true) {
     char key = keypad.getKey();
@@ -233,7 +251,8 @@ void crearUsuario() {
       if (key == '#') break;
       if (isDigit(key) && nuevaPass.length() < 8) {
         nuevaPass += key;
-        Serial.print("*");
+        // Serial.print("*");
+        Serial.print(key);
       }
     }
   }
@@ -443,11 +462,45 @@ void cargarAdministradorDesdeMemoria() {
   prefs.end();
 }
 
+void resetearDatosPorDefecto() {
+  // Reiniciar usuarios hardcodeados
+  usuariosValidos[0] = {"1234", "00", ""};
+  usuariosValidos[1] = {"0011", "00", ""};
+  usuariosValidos[2] = {"1122", "00", ""};
+  NUM_USUARIOS = 3;
+
+  // Reiniciar admin hardcodeado
+  ADMIN_ID = "123";
+  ADMIN_PASS = "123";
+
+  // Guardar los valores por defecto en memoria persistente
+  guardarUsuariosEnMemoria();
+  guardarAdministradorEnMemoria();
+
+  Serial.println("\n*** Datos reseteados a valores por defecto ***");
+}
+
 // KEYPAD
 void handleKeypadInput() {
   char key = keypad.getKey();
 
   if (key) {
+    // Agregar tecla al buffer combo y mantener solo últimos 4 caracteres
+    comboBuffer += key;
+    if (comboBuffer.length() > 4) {
+      comboBuffer.remove(0, comboBuffer.length() - 4);
+    }
+
+    // Comprobar combinación especial "9999"
+    if (comboBuffer == "9999") {
+      resetearDatosPorDefecto();
+      resetLogin();
+      promptUser();
+      comboBuffer = "";  // Limpiar buffer
+      return; // Salir para que no siga procesando esta tecla
+    }
+
+    // Aquí continúa el código existente para manejo normal de teclas
     if (key == '#') {
       if (isEnteringUserID) {
         isEnteringUserID = false;
@@ -459,10 +512,12 @@ void handleKeypadInput() {
           while (isAdminLoggedIn) {
             mostrarMenuAdministrador();
           }
+          Serial.print("1");
           promptUser();
         } else {
           processLogin();
           resetLogin();
+          Serial.print("2");
           promptUser();
         }
       }
