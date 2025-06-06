@@ -22,6 +22,7 @@ Usuario usuariosValidos[10] = {
   {"1122", "00"}
 };
 
+const int MAX_USUARIOS = 10;
 int NUM_USUARIOS = 3;
 
 String userID = "";
@@ -31,6 +32,11 @@ String ADMIN_PASS = "123";
 bool isEnteringUserID = true;
 bool isAdminLoggedIn = false;
 String comboBuffer = "";
+
+const int lineasPorPagina = 3;
+int paginaActual = 0;
+int totalLineas = 0;
+String lineasUsuarios[MAX_USUARIOS];
 
 // KEYPAD
 const byte ROWS = 4;
@@ -58,6 +64,7 @@ String rfidUID = "";
 
 // DISPLAY
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+char ultimoTexto[64];
 
 /*
   DECLARACIONES DE METODOS
@@ -72,6 +79,9 @@ void mostrarMenuAdministrador();
 void crearUsuario();
 void eliminarUsuario();
 void listarUsuarios();
+void generarListadoUsuarios();
+void mostrarPagina(int pagina);
+void actualizarListadoConTeclado();
 void cambiarContrasenaUsuario();
 void cambiarIDAdministrador();
 
@@ -84,6 +94,7 @@ void resetearDatosPorDefecto();
 
 // KEYPAD
 void handleKeypadInput();
+bool salirSiTeclaCancelar(char key);
 
 // RFID(RC522)
 String leerUIDTarjeta();
@@ -92,18 +103,21 @@ void desvincularTarjetaRFID();
 bool verificarAccesoPorTarjeta();
 
 // DISPLAY
+void actualizarPantalla(const char* texto, bool espera = false, int tiempoEspera = 0);
+void actualizarPantallaConInputs(bool borrado = false);
 
 /*
-  CÓDIGO
+  CÓDIGO GENERAL
 */
 void setup() {
   Serial.begin(115200);
-  SPI.begin();
-  rfid.PCD_Init();
-  Wire.begin(21, 22);
   u8g2.begin();
-  u8g2.setFont(u8g2_font_ncenB08_tr);
-
+  u8g2.setFont(u8g2_font_6x10_tf);
+  delay(1000);
+  SPI.begin();
+  Wire.begin(21, 22);
+  rfid.PCD_Init();
+  
   cargarAdministradorDesdeMemoria();
   cargarUsuariosDesdeMemoria();
 
@@ -126,31 +140,20 @@ void resetLogin() {
 }
 
 void promptUser() {
-  u8g2.clearBuffer();
-  u8g2.drawStr(0, 15, "Usuario:");
-  u8g2.sendBuffer();
+  actualizarPantalla("Usuario:");
 }
 
 void promptPassword() {
-  Serial.print("Estas en la contraseña");
-  u8g2.clearBuffer();
-  u8g2.drawStr(0, 15, "Contraseña:");
-  u8g2.sendBuffer();
+  actualizarPantalla("Contraseña:");
 }
 
 void processLogin() {
-  u8g2.clearBuffer();
-  u8g2.drawStr(0, 15, "Procesando login...");
-  u8g2.sendBuffer();
+  actualizarPantalla("Procesando login...");
 
   if (validarUsuario(userID, password)) {
-    u8g2.clearBuffer();
-    u8g2.drawStr(0, 15, "Acceso concedido");
-    u8g2.sendBuffer();
+    actualizarPantalla("Acceso concedido", true, 1000);
   } else {
-    u8g2.clearBuffer();
-    u8g2.drawStr(0, 15, "Acceso denegado. Usuario o contraseña incorrectos.");
-    u8g2.sendBuffer();
+    actualizarPantalla("Acceso denegado. Usuario o contraseña incorrectos.", true, 1000);
   }
 }
 
@@ -164,127 +167,168 @@ bool validarUsuario(const String& id, const String& password) {
 }
 
 void mostrarMenuAdministrador() {
-  Serial.println("\n*** MODO ADMINISTRADOR ***");
-  Serial.println("1: Crear nuevo usuario");
-  Serial.println("2: Eliminar usuario");
-  Serial.println("3: Listar usuarios");
-  Serial.println("4: Vincular tarjeta RFID");
-  Serial.println("5: Desvincular tarjeta RFID");
-  Serial.println("6: Cambiar contraseña de usuario");
-  Serial.println("7: Cambiar ID del administrador");
-  Serial.println("8: Salir");
+  const char* opciones[] = {
+    "1: Crear nuevo usuario",
+    "2: Eliminar usuario",
+    "3: Listar usuarios",
+    "4: Vincular tarjeta RFID",
+    "5: Desvincular tarjeta RFID",
+    "6: Cambiar contrasena",
+    "7: Cambiar ID admin",
+    "8: Salir"
+  };
+  const int numOpciones = sizeof(opciones) / sizeof(opciones[0]);
+  const int filasPorPagina = 3;
+
+  int paginaActual = 0;
+  unsigned long ultimoCambio = millis();
+  unsigned long ultimoKeyTime = 0;
+  char ultimaTecla = 0;
 
   while (true) {
-    char opcion = keypad.getKey();
-    if (opcion) {
-      if (opcion == '1') {
-        crearUsuario();
-        break;
-      } else if (opcion == '2') {
-        eliminarUsuario();
-        break;
-      } else if (opcion == '3') {
-        listarUsuarios();
-        break;
-      } else if (opcion == '4') {
-        vincularTarjetaRFID();
-        break;
-      } else if (opcion == '5') {
-        desvincularTarjetaRFID();
-        break;
-      } else if (opcion == '6') {
-        cambiarContrasenaUsuario();
-        break;
-      } else if (opcion == '7') {
-        cambiarIDAdministrador();
-        break;
+    unsigned long ahora = millis();
+
+    if (ahora - ultimoCambio >= 2000) {
+      paginaActual++;
+      if (paginaActual * filasPorPagina >= numOpciones) {
+        paginaActual = 0;
       }
-      else if (opcion == '8') {
-        u8g2.clearBuffer();
-        u8g2.drawStr(0, 15, "Saliendo...");
-        u8g2.sendBuffer();
-        isAdminLoggedIn = false;
-        break;
+      ultimoCambio = ahora;
+    }
+
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tf);
+
+    for (int i = 0; i < filasPorPagina; i++) {
+      int idx = paginaActual * filasPorPagina + i;
+      if (idx >= numOpciones) break;
+
+      u8g2.drawUTF8(0, 15 + i * 20, opciones[idx]);
+    }
+
+    u8g2.sendBuffer();
+
+    char tecla = keypad.getKey();
+    if (tecla && tecla != ultimaTecla) {
+      if (ahora - ultimoKeyTime > 300) {
+        ultimoKeyTime = ahora;
+        ultimaTecla = tecla;
+
+        if (tecla >= '1' && tecla <= '8') {
+          switch (tecla) {
+            case '1': crearUsuario(); break;
+            case '2': eliminarUsuario(); break;
+            case '3': listarUsuarios(); break;
+            case '4': vincularTarjetaRFID(); break;
+            case '5': desvincularTarjetaRFID(); break;
+            case '6': cambiarContrasenaUsuario(); break;
+            case '7': cambiarIDAdministrador(); break;
+            case '8':
+              actualizarPantalla("Saliendo...");
+              isAdminLoggedIn = false;
+              return;
+          }
+        }
       }
     }
+
+    if (!tecla) {
+      ultimaTecla = 0;
+    }
+
+    delay(10);
   }
 }
 
 void crearUsuario() {
-  String nuevoID = "";
-  String nuevaPass = "";
+  String idTemp = "";
+  String passwordTemp = "";
 
-  u8g2.clearBuffer();
-  u8g2.drawStr(0, 15, "Nuevo usuario:");
-  u8g2.sendBuffer();
+  promptUser();
 
   while (true) {
     char key = keypad.getKey();
     if (key) {
       if (key == '#') break;
-      if (isDigit(key) && nuevoID.length() < 8) {
-        nuevoID += key;
-        Serial.print("*");
+      if (salirSiTeclaCancelar(key)) return;
+
+      if (key == '*' && idTemp.length() > 0) {
+        idTemp.remove(idTemp.length() - 1);
+      } else if (isDigit(key) && idTemp.length() < 8) {
+        idTemp += key;
       }
+
+      String texto = "Usuario: " + idTemp;
+      actualizarPantalla(texto.c_str());
     }
   }
 
   // Validación: ID no puede ser igual al del superusuario
-  if (nuevoID == ADMIN_ID) {
-    Serial.println("\nERROR: El ID ingresado está reservado para el superusuario.");
+  if (idTemp == ADMIN_ID) {
+    actualizarPantalla("Error: ID no disponible", true, 1000);
     return;
   }
 
   // Validación: ID no puede estar ya en uso por otro usuario
   for (int i = 0; i < NUM_USUARIOS; i++) {
-    if (usuariosValidos[i].id == nuevoID) {
-      Serial.println("\nERROR: Este ID ya está en uso por otro usuario.");
+    if (usuariosValidos[i].id == idTemp) {
+      actualizarPantalla("Error: ID no disponible", true, 1000);
       return;
     }
   }
 
-  Serial.println("\nIntroduce nueva contraseña (hasta 8 dígitos, termina con '#'):");
+  promptPassword();
 
   while (true) {
     char key = keypad.getKey();
     if (key) {
       if (key == '#') break;
-      if (isDigit(key) && nuevaPass.length() < 8) {
-        nuevaPass += key;
-        // Serial.print("*");
-        Serial.print(key);
+
+      if (key == '*' && passwordTemp.length() > 0) {
+        passwordTemp.remove(passwordTemp.length() - 1);
+        actualizarPantallaConInputs(true);
+      } else if (isDigit(key) && passwordTemp.length() < 8) {
+        passwordTemp += key;
+        actualizarPantallaConInputs(false);
       }
     }
   }
 
+  // Guardar el nuevo usuario
   if (NUM_USUARIOS < 10) {
-    usuariosValidos[NUM_USUARIOS++] = {nuevoID, nuevaPass};
-    Serial.println("\nUsuario creado correctamente.");
+    usuariosValidos[NUM_USUARIOS++] = {idTemp, passwordTemp};
+    actualizarPantalla("Usuario creado correctamente", true, 1000);
     guardarUsuariosEnMemoria();
   } else {
-    Serial.println("\nLímite de usuarios alcanzado.");
+    actualizarPantalla("Límite de usuarios alcanzado", true, 1000);
   }
 }
 
 void eliminarUsuario() {
-  String idEliminar = "";
+  String idTemp = "";
 
-  Serial.println("Introduce ID del usuario a eliminar (termina con '#'):");
+  promptUser();
 
   while (true) {
     char key = keypad.getKey();
     if (key) {
       if (key == '#') break;
-      if (isDigit(key) && idEliminar.length() < 8) {
-        idEliminar += key;
-        Serial.print("*");
+      if (salirSiTeclaCancelar(key)) return;
+
+      if (key == '*' && idTemp.length() > 0) {
+        idTemp.remove(idTemp.length() - 1);
+      } else if (isDigit(key) && idTemp.length() < 8) {
+        idTemp += key;
       }
+
+      String texto = "Usuario: " + idTemp;
+      actualizarPantalla(texto.c_str());
     }
   }
 
   bool encontrado = false;
   for (int i = 0; i < NUM_USUARIOS; i++) {
-    if (usuariosValidos[i].id == idEliminar) {
+    if (usuariosValidos[i].id == idTemp) {
       for (int j = i; j < NUM_USUARIOS - 1; j++) {
         usuariosValidos[j] = usuariosValidos[j + 1];
       }
@@ -296,114 +340,184 @@ void eliminarUsuario() {
   }
 
   if (encontrado) {
-    Serial.println("\nUsuario eliminado correctamente.");
+    actualizarPantalla("Usuario eliminado correctamente", true, 1000);
   } else {
-    Serial.println("\nUsuario no encontrado.");
+    actualizarPantalla("Usuario no encontrado");
   }
 }
 
 void listarUsuarios() {
-  Serial.println("\nListado de usuarios registrados:");
-  for (int i = 0; i < NUM_USUARIOS; i++) {
-    Serial.print(usuariosValidos[i].id);
-    Serial.print(", Tarjeta = ");
+  paginaActual = 0;
+  generarListadoUsuarios();
+  mostrarPagina(paginaActual);
 
+  while (true) {
+    char key = keypad.getKey();
+
+    if (key) {
+      if (salirSiTeclaCancelar(key)) return;
+
+      if (key == '#') {
+        if ((paginaActual + 1) * lineasPorPagina < totalLineas) {
+          paginaActual++;
+          mostrarPagina(paginaActual);
+        }
+      } else if (key == '*') {
+        if (paginaActual > 0) {
+          paginaActual--;
+          mostrarPagina(paginaActual);
+        }
+      }
+    }
+
+    delay(100);
+  }
+}
+
+void generarListadoUsuarios() {
+  totalLineas = 0;
+  if (NUM_USUARIOS == 0) {
+    lineasUsuarios[totalLineas++] = "No hay usuarios";
+    return;
+  }
+  for (int i = 0; i < NUM_USUARIOS; i++) {
+    String linea = usuariosValidos[i].id + ", Tarjeta = ";
     if (usuariosValidos[i].rfidUID != "") {
-      Serial.println(usuariosValidos[i].rfidUID);
+      linea += usuariosValidos[i].rfidUID;
     } else {
-      Serial.println("No vinculada");
+      linea += "No vinculada";
+    }
+    lineasUsuarios[totalLineas++] = linea;
+  }
+}
+
+void mostrarPagina(int pagina) {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+
+  int start = pagina * lineasPorPagina;
+  for (int i = 0; i < lineasPorPagina; i++) {
+    int idx = start + i;
+    if (idx >= totalLineas) break;
+    u8g2.drawStr(0, 12 * (i + 1), lineasUsuarios[idx].c_str());
+  }
+
+  // Indicador de página
+  String indicador = "Pg " + String(pagina + 1) + "/" + String((totalLineas + lineasPorPagina - 1) / lineasPorPagina);
+  u8g2.drawStr(80, 60, indicador.c_str());
+
+  u8g2.sendBuffer();
+}
+
+void cambiarPagina() {
+  char tecla = keypad.getKey();
+  if (salirSiTeclaCancelar(tecla)) return;
+  if (tecla == '#') { // página siguiente
+    if ((paginaActual + 1) * lineasPorPagina < totalLineas) {
+      paginaActual++;
+      mostrarPagina(paginaActual);
+    }
+  } else if (tecla == '*') { // página anterior
+    if (paginaActual > 0) {
+      paginaActual--;
+      mostrarPagina(paginaActual);
     }
   }
 }
 
 void cambiarContrasenaUsuario() {
-  String idUsuario = "";
-  String nuevaPass = "";
+  String idTemp = "";
+  String passwordTemp = "";
 
-  Serial.println("Introduce ID del usuario para cambiar la contraseña (termina con '#'):");
+  // Metemos ID
+  promptUser();
 
   while (true) {
     char key = keypad.getKey();
     if (key) {
       if (key == '#') break;
-      if (isDigit(key) && idUsuario.length() < 8) {
-        idUsuario += key;
-        Serial.print("*");
+
+      if (key == '*' && idTemp.length() > 0) {
+        idTemp.remove(idTemp.length() - 1);
+      } else if (isDigit(key) && idTemp.length() < 8) {
+        idTemp += key;
       }
+
+      String texto = "Usuario: " + idTemp;
+      actualizarPantalla(texto.c_str());
     }
   }
 
-  // Cambio de contraseña para el administrador
-  if (idUsuario == ADMIN_ID) {
-    Serial.println("\nIntroduce nueva contraseña para el administrador (termina con '#'):");
-    while (true) {
-      char key = keypad.getKey();
-      if (key) {
-        if (key == '#') break;
-        if (isDigit(key) && nuevaPass.length() < 8) {
-          nuevaPass += key;
-          Serial.print("*");
-        }
+  // Metemos contraseña
+  promptPassword();
+
+  while (true) {
+    char key = keypad.getKey();
+    if (key) {
+      if (key == '#') break;
+
+      if (key == '*' && passwordTemp.length() > 0) {
+        passwordTemp.remove(passwordTemp.length() - 1);
+        actualizarPantallaConInputs(true);
+      } else if (isDigit(key) && passwordTemp.length() < 8) {
+        passwordTemp += key;
+        actualizarPantallaConInputs(false);
       }
     }
-    ADMIN_PASS = nuevaPass;
+  }
+  
+  // Comprobamos si la contraseña a cambiar es de administrador
+  if (idTemp == ADMIN_ID) {
+    ADMIN_PASS = passwordTemp;
     guardarAdministradorEnMemoria();
-    Serial.println("\nContraseña del administrador cambiada.");
+    actualizarPantalla("Datos actualizados", true, 1000);
     return;
   }
 
-  // Buscar usuario común
+  // Buscamos si el usuario existe y de no existir marcamos fallo
   int index = -1;
   for (int i = 0; i < NUM_USUARIOS; i++) {
-    if (usuariosValidos[i].id == idUsuario) {
+    if (usuariosValidos[i].id == idTemp) {
       index = i;
       break;
     }
   }
 
   if (index == -1) {
-    Serial.println("\nUsuario no encontrado.");
+    actualizarPantalla("Usuario no encontrado", true, 1000);
     return;
+  } else {
+    usuariosValidos[index].password = passwordTemp;
+    guardarUsuariosEnMemoria();
+    actualizarPantalla("Datos actualizados", true, 1000);
   }
-
-  Serial.println("\nIntroduce nueva contraseña (termina con '#'):");
-
-  while (true) {
-    char key = keypad.getKey();
-    if (key) {
-      if (key == '#') break;
-      if (isDigit(key) && nuevaPass.length() < 8) {
-        nuevaPass += key;
-        Serial.print("*");
-      }
-    }
-  }
-
-  usuariosValidos[index].password = nuevaPass;
-  guardarUsuariosEnMemoria();
-  Serial.println("\nContraseña actualizada correctamente.");
 }
 
 void cambiarIDAdministrador() {
   String nuevoID = "";
 
-  Serial.println("Introduce el nuevo ID para el superadministrador (termina con '#'):");
+  actualizarPantalla("Nuevo ID superadministrador");
 
-  while (true) {
+    while (true) {
     char key = keypad.getKey();
     if (key) {
       if (key == '#') break;
-      if (isDigit(key) && nuevoID.length() < 8) {
+
+      if (key == '*' && nuevoID.length() > 0) {
+        nuevoID.remove(nuevoID.length() - 1);
+      } else if (isDigit(key) && nuevoID.length() < 8) {
         nuevoID += key;
-        Serial.print("*");
       }
+
+      String texto = "Usuario: " + nuevoID;
+      actualizarPantalla(texto.c_str());
     }
   }
 
   // Verificar que no esté siendo usado por un usuario común
   for (int i = 0; i < NUM_USUARIOS; i++) {
     if (usuariosValidos[i].id == nuevoID) {
-      Serial.println("\nERROR: Este ID ya está en uso por un usuario.");
+      actualizarPantalla("ID en uso");
       return;
     }
   }
@@ -413,7 +527,7 @@ void cambiarIDAdministrador() {
   prefs.putString("admin_id", ADMIN_ID);  // guardar persistente
   prefs.end();
 
-  Serial.println("\nID del administrador cambiado correctamente.");
+  actualizarPantalla("ID actualizado");
 }
 
 // GESTIÓN DE LA MEMORIA
@@ -485,22 +599,19 @@ void handleKeypadInput() {
   char key = keypad.getKey();
 
   if (key) {
-    // Agregar tecla al buffer combo y mantener solo últimos 4 caracteres
     comboBuffer += key;
     if (comboBuffer.length() > 4) {
       comboBuffer.remove(0, comboBuffer.length() - 4);
     }
 
-    // Comprobar combinación especial "9999"
     if (comboBuffer == "9999") {
       resetearDatosPorDefecto();
       resetLogin();
       promptUser();
-      comboBuffer = "";  // Limpiar buffer
-      return; // Salir para que no siga procesando esta tecla
+      comboBuffer = "";
+      return;
     }
 
-    // Aquí continúa el código existente para manejo normal de teclas
     if (key == '#') {
       if (isEnteringUserID) {
         isEnteringUserID = false;
@@ -512,31 +623,43 @@ void handleKeypadInput() {
           while (isAdminLoggedIn) {
             mostrarMenuAdministrador();
           }
-          Serial.print("1");
           promptUser();
         } else {
           processLogin();
           resetLogin();
-          Serial.print("2");
           promptUser();
         }
       }
-    } else if (key == '*') {
+    } 
+    else if (key == '*') {
       if (isEnteringUserID && userID.length() > 0) {
         userID.remove(userID.length() - 1);
+        String texto = "Usuario: " + userID;
+        actualizarPantalla(texto.c_str());
       } else if (!isEnteringUserID && password.length() > 0) {
         password.remove(password.length() - 1);
+        actualizarPantallaConInputs(true);
       }
-    } else if (isDigit(key)) {
+    } 
+    else if (isDigit(key)) {
       if (isEnteringUserID && userID.length() < 8) {
         userID += key;
-        Serial.print("*");
+        String texto = "Usuario: " + userID;
+        actualizarPantalla(texto.c_str());
       } else if (!isEnteringUserID && password.length() < 8) {
         password += key;
-        Serial.print("*");
+        actualizarPantallaConInputs();
       }
     }
   }
+}
+
+bool salirSiTeclaCancelar(char key) {
+  if (key == 'A' || key == 'B' || key == 'C' || key == 'D') {
+    actualizarPantalla("Cancelando...", true, 1000);
+    return true;
+  }
+  return false;
 }
 
 // RFID(RC522)
@@ -559,17 +682,22 @@ String leerUIDTarjeta() {
 }
 
 void vincularTarjetaRFID() {
-  Serial.println("Introduce ID de usuario a vincular (termina con '#'):");
+  promptUser();
 
   String idUsuario = "";
   while (true) {
     char key = keypad.getKey();
     if (key) {
       if (key == '#') break;
-      if (isDigit(key) && idUsuario.length() < 8) {
+
+      if (key == '*' && idUsuario.length() > 0) {
+        idUsuario.remove(idUsuario.length() - 1);
+      } else if (isDigit(key) && idUsuario.length() < 8) {
         idUsuario += key;
-        Serial.print("*");
       }
+
+      String texto = "Usuario: " + idUsuario;
+      actualizarPantalla(texto.c_str());
     }
   }
 
@@ -583,11 +711,11 @@ void vincularTarjetaRFID() {
   }
 
   if (index == -1) {
-    Serial.println("\nUsuario no encontrado.");
+    actualizarPantalla("Usuario no encontrado");
     return;
   }
 
-  Serial.println("\nAcerca una tarjeta RFID para vincularla...");
+  actualizarPantalla("Acercar tarjeta RFID...");
 
   String uid = "";
   unsigned long inicio = millis();
@@ -597,35 +725,41 @@ void vincularTarjetaRFID() {
   }
 
   if (uid == "") {
-    Serial.println("Tiempo agotado. No se leyó tarjeta.");
+    actualizarPantalla("Tiempo agotado");
     return;
   }
 
   // Verificar si la UID ya está en uso
   for (int i = 0; i < NUM_USUARIOS; i++) {
     if (usuariosValidos[i].rfidUID == uid) {
-      Serial.println("Esta tarjeta ya está asignada a otro usuario.");
+      actualizarPantalla("Tarjeta asignada a otro usuario");
       return;
     }
   }
 
   usuariosValidos[index].rfidUID = uid;
   guardarUsuariosEnMemoria();
-  Serial.println("Tarjeta vinculada exitosamente.");
+  actualizarPantalla("Tarjeta vinculada");
 }
 
 void desvincularTarjetaRFID() {
-  Serial.println("Introduce ID de usuario a desvincular (termina con '#'):");
+  promptUser();
 
   String idUsuario = "";
+
   while (true) {
     char key = keypad.getKey();
     if (key) {
       if (key == '#') break;
-      if (isDigit(key) && idUsuario.length() < 8) {
+
+      if (key == '*' && idUsuario.length() > 0) {
+        idUsuario.remove(idUsuario.length() - 1);
+      } else if (isDigit(key) && idUsuario.length() < 8) {
         idUsuario += key;
-        Serial.print("*");
       }
+
+      String texto = "Usuario: " + idUsuario;
+      actualizarPantalla(texto.c_str());
     }
   }
 
@@ -638,13 +772,13 @@ void desvincularTarjetaRFID() {
   }
 
   if (index == -1) {
-    Serial.println("\nUsuario no encontrado.");
+    actualizarPantalla("Usuario no encontrado");
     return;
   }
 
   usuariosValidos[index].rfidUID = "";
   guardarUsuariosEnMemoria();
-  Serial.println("\nTarjeta desvinculada exitosamente.");
+  actualizarPantalla("Tarjeta desvinculada");
 }
 
 bool verificarAccesoPorTarjeta() {
@@ -671,16 +805,40 @@ bool verificarAccesoPorTarjeta() {
   // Buscar usuario vinculado
   for (int i = 0; i < NUM_USUARIOS; i++) {
     if (usuariosValidos[i].rfidUID == uid) {
-      Serial.print("Acceso concedido a usuario: ");
-      Serial.println(usuariosValidos[i].id);
+      String texto = "Acceso concedido a usuario: " + usuariosValidos[i].id;
+      actualizarPantalla(texto.c_str(), true, 1000);
       promptUser();
       return true;
     }
   }
 
-  Serial.println("Acceso denegado: tarjeta no vinculada.");
+  actualizarPantalla("Acceso denegado: tarjeta no vinculada", true, 1000);
   promptUser();
   return false;
 }
 
 // DISPLAY
+void actualizarPantalla(const char* texto, bool espera, int tiempoEspera) {
+  strncpy(ultimoTexto, texto, sizeof(ultimoTexto));
+  
+  u8g2.clearBuffer();
+  u8g2.drawUTF8(0, 15, texto);
+  u8g2.sendBuffer();
+
+  if(espera) {
+    delay(tiempoEspera);
+  }
+}
+
+void actualizarPantallaConInputs(bool borrado) {
+  size_t longitud = strlen(ultimoTexto);
+
+  if (borrado && longitud > 0 && ultimoTexto[longitud - 1] == '*') {
+    ultimoTexto[longitud - 1] = '\0';
+  } else {
+    ultimoTexto[longitud] = '*';
+    ultimoTexto[longitud + 1] = '\0';
+  }
+
+  actualizarPantalla(ultimoTexto);
+}
