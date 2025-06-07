@@ -5,6 +5,8 @@
 #include <Preferences.h>
 #include <Wire.h>
 #include <U8g2lib.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
 
 /*
   PARAMETROS
@@ -66,6 +68,15 @@ String rfidUID = "";
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 char ultimoTexto[64];
 
+// IOT - Bot Telegram
+const char* ssid = "DIGIFIBRA-Te6b_EXT";
+const char* passwordWifi = "sECxNtNcdD6Q";
+String botToken = "7668573039:AAGZl1hYgxTacgpy8VPPPZHqjFQVq72MuIg";
+String chatID = "6421188587";
+
+// PIN de activación
+#define RELAY_PIN 15
+
 /*
   DECLARACIONES DE METODOS
 */
@@ -106,6 +117,9 @@ bool verificarAccesoPorTarjeta();
 void actualizarPantalla(const char* texto, bool espera = false, int tiempoEspera = 0);
 void actualizarPantallaConInputs(bool borrado = false);
 
+// IOT - Bot Telegram
+void enviarMensaje(String mensaje);
+
 /*
   CÓDIGO GENERAL
 */
@@ -117,7 +131,18 @@ void setup() {
   SPI.begin();
   Wire.begin(21, 22);
   rfid.PCD_Init();
-  
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW);
+
+  // Conexion al Wi-Fi
+  WiFi.begin(ssid, passwordWifi);
+  int intentos = 0;
+  while (WiFi.status() != WL_CONNECTED && intentos < 20) {
+    delay(500);
+    // Serial.print(".");
+    intentos++;
+  }
+
   cargarAdministradorDesdeMemoria();
   cargarUsuariosDesdeMemoria();
 
@@ -160,9 +185,15 @@ void processLogin() {
 bool validarUsuario(const String& id, const String& password) {
   for (int i = 0; i < NUM_USUARIOS; i++) {
     if (usuariosValidos[i].id == id && usuariosValidos[i].password == password) {
+      digitalWrite(RELAY_PIN, HIGH);
+      enviarMensaje("Acceso concedido a usuario:" + id);
+      delay(2000);
+      digitalWrite(RELAY_PIN, LOW);
       return true;
     }
   }
+
+  enviarMensaje("Intento de acceso fallido");
   return false;
 }
 
@@ -436,6 +467,7 @@ void cambiarContrasenaUsuario() {
     char key = keypad.getKey();
     if (key) {
       if (key == '#') break;
+      if (salirSiTeclaCancelar(key)) return;
 
       if (key == '*' && idTemp.length() > 0) {
         idTemp.remove(idTemp.length() - 1);
@@ -455,6 +487,7 @@ void cambiarContrasenaUsuario() {
     char key = keypad.getKey();
     if (key) {
       if (key == '#') break;
+      if (salirSiTeclaCancelar(key)) return;
 
       if (key == '*' && passwordTemp.length() > 0) {
         passwordTemp.remove(passwordTemp.length() - 1);
@@ -502,6 +535,7 @@ void cambiarIDAdministrador() {
     char key = keypad.getKey();
     if (key) {
       if (key == '#') break;
+      if (salirSiTeclaCancelar(key)) return;
 
       if (key == '*' && nuevoID.length() > 0) {
         nuevoID.remove(nuevoID.length() - 1);
@@ -656,7 +690,7 @@ void handleKeypadInput() {
 
 bool salirSiTeclaCancelar(char key) {
   if (key == 'A' || key == 'B' || key == 'C' || key == 'D') {
-    actualizarPantalla("Cancelando...", true, 1000);
+    actualizarPantalla("Cancelando...", true, 250);
     return true;
   }
   return false;
@@ -689,6 +723,7 @@ void vincularTarjetaRFID() {
     char key = keypad.getKey();
     if (key) {
       if (key == '#') break;
+      if (salirSiTeclaCancelar(key)) return;
 
       if (key == '*' && idUsuario.length() > 0) {
         idUsuario.remove(idUsuario.length() - 1);
@@ -751,6 +786,7 @@ void desvincularTarjetaRFID() {
     char key = keypad.getKey();
     if (key) {
       if (key == '#') break;
+      if (salirSiTeclaCancelar(key)) return;
 
       if (key == '*' && idUsuario.length() > 0) {
         idUsuario.remove(idUsuario.length() - 1);
@@ -806,12 +842,17 @@ bool verificarAccesoPorTarjeta() {
   for (int i = 0; i < NUM_USUARIOS; i++) {
     if (usuariosValidos[i].rfidUID == uid) {
       String texto = "Acceso concedido a usuario: " + usuariosValidos[i].id;
+      enviarMensaje(texto + "mediante tarjeta");
+      digitalWrite(RELAY_PIN, HIGH);
       actualizarPantalla(texto.c_str(), true, 1000);
+      delay(2000);
+      digitalWrite(RELAY_PIN, LOW);
       promptUser();
       return true;
     }
   }
 
+  enviarMensaje("Acceso denegado: tarjeta no vinculada");
   actualizarPantalla("Acceso denegado: tarjeta no vinculada", true, 1000);
   promptUser();
   return false;
@@ -841,4 +882,26 @@ void actualizarPantallaConInputs(bool borrado) {
   }
 
   actualizarPantalla(ultimoTexto);
+}
+
+// IOT - Bot Telegram
+void enviarMensaje(String mensaje) {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    String url = "https://api.telegram.org/bot" + botToken + "/sendMessage?chat_id=" + chatID + "&text=" + mensaje;
+    
+    http.begin(url);
+    int httpResponseCode = http.GET();
+
+    if (httpResponseCode > 0) {
+      Serial.println("Mensaje enviado: " + mensaje);
+    } else {
+      Serial.print("Error al enviar: ");
+      Serial.println(http.errorToString(httpResponseCode));
+    }
+
+    http.end();
+  } else {
+    Serial.println("WiFi no conectado");
+  }
 }
