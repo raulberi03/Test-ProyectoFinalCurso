@@ -173,6 +173,8 @@ void promptPassword() {
 }
 
 void processLogin() {
+  actualizarPantalla("Procesando login...");
+
   if (validarUsuario(userID, password)) {
     actualizarPantalla("Acceso concedido", true, 1000);
   } else {
