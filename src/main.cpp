@@ -173,8 +173,6 @@ void promptPassword() {
 }
 
 void processLogin() {
-  actualizarPantalla("Procesando login...");
-
   if (validarUsuario(userID, password)) {
     actualizarPantalla("Acceso concedido", true, 1000);
   } else {
@@ -842,7 +840,7 @@ bool verificarAccesoPorTarjeta() {
   for (int i = 0; i < NUM_USUARIOS; i++) {
     if (usuariosValidos[i].rfidUID == uid) {
       String texto = "Acceso concedido a usuario: " + usuariosValidos[i].id;
-      enviarMensaje(texto + "mediante tarjeta");
+      enviarMensaje(texto + " mediante tarjeta");
       digitalWrite(RELAY_PIN, HIGH);
       actualizarPantalla(texto.c_str(), true, 1000);
       delay(2000);
